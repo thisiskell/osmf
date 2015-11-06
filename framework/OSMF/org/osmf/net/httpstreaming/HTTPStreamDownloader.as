@@ -209,6 +209,16 @@ package org.osmf.net.httpstreaming
 				}
 			}
 
+			if (_ioErrorRetryTimer != null)
+			{
+				_ioErrorRetryTimer.stop();
+				if (dispose)
+				{
+					_ioErrorRetryTimer.removeEventListener(TimerEvent.TIMER_COMPLETE, onIOErrorRetryTimeout);
+					_ioErrorRetryTimer = null;
+				}
+			}
+
 			if (_urlStream != null)
 			{
 				if (_urlStream.connected)
@@ -458,6 +468,28 @@ package org.osmf.net.httpstreaming
 		 **/
 		private function onError(event:Event):void
 		{
+			if (event.type == IOErrorEvent.IO_ERROR)
+			{
+				CONFIG::LOGGING
+				{
+					logger.error("IOErrorEvent trying to download [" + _request.url + "]");
+				}
+				
+				if (shouldRetry)
+				{
+					if (_ioErrorRetryTimer == null)
+					{
+						_ioErrorRetryTimer = new Timer(500, 1);
+						_ioErrorRetryTimer.addEventListener(TimerEvent.TIMER_COMPLETE, onIOErrorRetryTimeout);
+					}
+
+					_ioErrorRetryTimer.reset();
+					_ioErrorRetryTimer.start();
+					
+					return;
+				}
+			}
+
 			if (_timeoutTimer != null)
 			{
 				stopTimeoutMonitor();
@@ -473,9 +505,11 @@ package org.osmf.net.httpstreaming
 			_isComplete = false;
 			_hasErrors = true;
 
+			var requestUrl:String = (_request != null) ? _request.url : "";
+
 			CONFIG::LOGGING
 			{
-				logger.error("Loading failed. It took " + _downloadDuration + " sec and " + _currentRetry + " retries to fail while downloading [" + _request.url + "].");
+				logger.error("Loading failed. It took " + _downloadDuration + " sec and " + _currentRetry + " retries to fail while downloading [" + requestUrl + "].");
 				logger.error("URLStream error event: " + event);
 			}
 			
@@ -493,7 +527,7 @@ package org.osmf.net.httpstreaming
 					0, // fragment duration
 					null, // scriptDataObject
 					FLVTagScriptDataMode.NORMAL, // scriptDataMode
-					_request.url, // urlString
+					requestUrl, // urlString
 					0, // bytesDownloaded
 					reason, // reason
 					this); // downloader
@@ -539,26 +573,51 @@ package org.osmf.net.httpstreaming
 			CONFIG::LOGGING
 			{
 				logger.error("Timeout while trying to download [" + _request.url + "]");
-				logger.error("Canceling and retrying the download.");
 			}
 			
-			if (OSMFSettings.hdsMaximumRetries > -1)
-			{
-				_currentRetry++;
-			}
-			
-			if (	
-					OSMFSettings.hdsMaximumRetries == -1 
-				||  (OSMFSettings.hdsMaximumRetries != -1 && _currentRetry < OSMFSettings.hdsMaximumRetries)
-			)
+			if (shouldRetry)
 			{					
-				open(_request, _dispatcher, _timeoutInterval + OSMFSettings.hdsTimeoutAdjustmentOnRetry);
+				retry();
 			}
 			else
 			{
 				close();
 				onError(new Event(Event.CANCEL));
 			}
+		}
+		
+		private function onIOErrorRetryTimeout(event:TimerEvent):void
+		{
+			CONFIG::LOGGING
+			{
+				logger.debug("Ready to retry download [" + _request.url + "]");
+			}
+
+			retry();
+		}
+		
+		private function get shouldRetry():Boolean
+		{
+			return OSMFSettings.hdsMaximumRetries == -1 ||  (OSMFSettings.hdsMaximumRetries != -1 && _currentRetry < OSMFSettings.hdsMaximumRetries)
+		}
+		
+		/**
+		 * @private
+		 * Retry loading failed fragment.
+		 */ 
+		private function retry():void
+		{
+			if (OSMFSettings.hdsMaximumRetries > -1)
+			{
+				_currentRetry++;
+			}
+			
+			CONFIG::LOGGING
+			{
+				logger.debug("Retry number " + _currentRetry + " of " + OSMFSettings.hdsMaximumRetries + " to download [" + _request.url + "]");
+			}
+			
+			open(_request, _dispatcher, _timeoutInterval + OSMFSettings.hdsTimeoutAdjustmentOnRetry);
 		}
 		
 		/// Internals
@@ -578,6 +637,7 @@ package org.osmf.net.httpstreaming
 		
 		private var _timeoutTimer:Timer = null;
 		private var _timeoutInterval:Number = 1000;
+		private var _ioErrorRetryTimer:Timer = null;
 		private var _currentRetry:Number = 0;
 		
 		CONFIG::LOGGING
